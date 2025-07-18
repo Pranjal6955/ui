@@ -21,7 +21,10 @@ import {
   processMetricValue,
   aggregateMetricsByLabel,
   calculateCacheHitRatio,
+  useHttpRequestsTotal,
+  useHttpErrorRequestsTotal,
 } from '../hooks/queries/useMetricsQueries';
+import { PieChart, Pie, Cell, Legend, ResponsiveContainer, Label } from 'recharts';
 
 // Enhanced animations matching KubeStellar theme
 const pageAnimationVariant = {
@@ -35,6 +38,14 @@ const itemAnimationVariant = {
   animate: { opacity: 1, y: 0, transition: { duration: 0.5, ease: 'easeOut' } },
   exit: { opacity: 0, y: -10, transition: { duration: 0.3 } },
 };
+
+// Pie chart colors
+const PIE_COLORS = [
+  '#6366F1', '#22D3EE', '#F59E42', '#10B981', '#F43F5E', '#A78BFA', '#FBBF24', '#3B82F6', '#F472B6', '#34D399', '#F87171', '#818CF8', '#FDE68A', '#60A5FA', '#FCA5A5', '#6EE7B7', '#FCD34D', '#C7D2FE', '#F9A8D4', '#A3E635', '#FECACA', '#D1FAE5', '#FDE68A', '#F3F4F6', '#E5E7EB', '#D1D5DB', '#9CA3AF', '#6B7280', '#4B5563', '#374151', '#1F2937', '#111827'
+];
+
+// Add a function to calculate the total value
+const getTotalValue = (data: { value: number }[]) => data.reduce((sum, d) => sum + d.value, 0);
 
 // Metric card component with KubeStellar styling
 const MetricCard = ({
@@ -213,10 +224,48 @@ const MetricsChart = ({
   );
 };
 
+// Responsive topN calculation
+function useResponsiveTopN() {
+  const [topN, setTopN] = useState(6);
+  useEffect(() => {
+    function handleResize() {
+      const width = window.innerWidth;
+      if (width < 640) setTopN(3); // mobile
+      else if (width < 1024) setTopN(5); // tablet
+      else setTopN(8); // desktop
+    }
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+  return topN;
+}
+
+// Responsive donut chart size
+function useDonutSize() {
+  const [size, setSize] = useState({ outer: 80, inner: 48 });
+  useEffect(() => {
+    function handleResize() {
+      const width = window.innerWidth;
+      if (width < 640) setSize({ outer: 60, inner: 32 }); // mobile
+      else if (width < 1024) setSize({ outer: 70, inner: 40 }); // tablet
+      else setSize({ outer: 80, inner: 48 }); // desktop
+    }
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+  return size;
+}
+
 // Main MetricsDashboard component
 const MetricsDashboard = () => {
   const { useCacheMetrics, useClusterMetrics, useRuntimeMetrics, useMetricsSummary } =
     useMetricsQueries();
+  const { data: httpRequestsTotal, isLoading: httpRequestsLoading } = useHttpRequestsTotal();
+  const { data: httpErrorRequestsTotal, isLoading: httpErrorRequestsLoading } = useHttpErrorRequestsTotal();
+  const topN = useResponsiveTopN();
+  const donutSize = useDonutSize();
 
   // State for dashboard controls
   const [autoRefresh, setAutoRefresh] = useState(() => {
@@ -325,6 +374,52 @@ const MetricsDashboard = () => {
 
     return { cacheData, kubectlOpsData };
   }, [cacheMetrics, clusterMetrics]);
+
+  // Pie chart data: group by path, show top 6, rest as 'Other'
+  const pieChartData = useMemo(() => {
+    if (!httpRequestsTotal || httpRequestsTotal.length === 0) return [];
+    // Group by last segment of path
+    const grouped: Record<string, number> = {};
+    httpRequestsTotal.forEach(item => {
+      const path = item.labels.path || 'unknown';
+      // Extract last segment after last '/'
+      const segments = path.split('/').filter(Boolean);
+      const name = segments.length > 0 ? segments[segments.length - 1] : path;
+      grouped[name] = (grouped[name] || 0) + item.value;
+    });
+    // Sort by value desc
+    const sorted = Object.entries(grouped).sort((a, b) => b[1] - a[1]);
+    const top = sorted.slice(0, topN);
+    const otherSum = sorted.slice(topN).reduce((sum, [, v]) => sum + v, 0);
+    const data = top.map(([name, value]) => ({ name, value }));
+    if (otherSum > 0) data.push({ name: 'Other', value: otherSum });
+    return data;
+  }, [httpRequestsTotal, topN]);
+
+  // Error Requests Donut Chart Data
+  const errorPieChartData = useMemo(() => {
+    if (!httpErrorRequestsTotal || httpErrorRequestsTotal.length === 0) return [];
+    const grouped: Record<string, number> = {};
+    httpErrorRequestsTotal.forEach(item => {
+      const path = item.labels.path || 'unknown';
+      const segments = path.split('/').filter(Boolean);
+      const name = segments.length > 0 ? segments[segments.length - 1] : path;
+      grouped[name] = (grouped[name] || 0) + item.value;
+    });
+    const sorted = Object.entries(grouped).sort((a, b) => b[1] - a[1]);
+    const top = sorted.slice(0, topN);
+    const otherSum = sorted.slice(topN).reduce((sum, [, v]) => sum + v, 0);
+    const data = top.map(([name, value]) => ({ name, value }));
+    if (otherSum > 0) data.push({ name: 'Other', value: otherSum });
+    return data;
+  }, [httpErrorRequestsTotal, topN]);
+
+  // Helper for arc label: only show if >8% of total
+  const arcLabel = (data, total) => ({ value }) => {
+    if (!total || total === 0) return '';
+    const percent = value / total;
+    return percent > 0.08 ? `${value}` : '';
+  };
 
   // Manual refresh function
   const handleRefresh = useCallback(async () => {
@@ -519,6 +614,134 @@ const MetricsDashboard = () => {
             color="amber"
           />
         )}
+
+        {/* HTTP Requests Donut Chart */}
+        <div className="rounded-xl border border-gray-100 bg-white p-6 shadow-sm dark:border-gray-700 dark:bg-gray-800">
+          <h3 className="mb-4 text-lg font-semibold text-gray-900 dark:text-gray-100">HTTP Requests by Path</h3>
+          {httpRequestsLoading ? (
+            <div className="h-40 flex items-center justify-center text-gray-400">Loading...</div>
+          ) : pieChartData.length === 0 ? (
+            <div className="h-40 flex items-center justify-center text-gray-400">No data</div>
+          ) : (
+            <ResponsiveContainer width="100%" height={donutSize.outer * 3.2}>
+              <PieChart>
+                <Pie
+                  data={pieChartData}
+                  dataKey="value"
+                  nameKey="name"
+                  cx="50%"
+                  cy="50%"
+                  outerRadius={donutSize.outer}
+                  innerRadius={donutSize.inner}
+                  isAnimationActive={false}
+                  label={arcLabel(pieChartData, getTotalValue(pieChartData))}
+                  labelLine={false}
+                  minAngle={5}
+                >
+                  {pieChartData.map((entry, idx) => (
+                    <Cell
+                      key={`cell-${idx}`}
+                      fill={PIE_COLORS[idx % PIE_COLORS.length]}
+                      style={{ cursor: 'default' }}
+                    />
+                  ))}
+                  {/* Center label for total */}
+                  <Label
+                    value={getTotalValue(pieChartData)}
+                    position="center"
+                    fontSize={donutSize.outer / 2.5}
+                    fill="#1e293b"
+                    className="font-bold"
+                  />
+                </Pie>
+                <Legend
+                  wrapperStyle={{ paddingTop: 20 }}
+                  content={({ payload }) => (
+                    <ul className="flex flex-wrap gap-4 mt-4 justify-center">
+                      {payload && payload.map((entry, idx) => (
+                        <li
+                          key={`legend-item-${idx}`}
+                          className="flex items-center gap-3 px-3 py-1 rounded text-base text-gray-700 dark:text-gray-200"
+                          style={{ cursor: 'default' }}
+                        >
+                          <span
+                            className="inline-block w-4 h-4 rounded-full border border-gray-300 dark:border-gray-700"
+                            style={{ backgroundColor: entry.color }}
+                          />
+                          {entry.value}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                />
+              </PieChart>
+            </ResponsiveContainer>
+          )}
+        </div>
+
+        {/* HTTP Error Requests Donut Chart */}
+        <div className="rounded-xl border border-gray-100 bg-white p-6 shadow-sm dark:border-gray-700 dark:bg-gray-800">
+          <h3 className="mb-4 text-lg font-semibold text-white">HTTP Error Requests by Path</h3>
+          {httpErrorRequestsLoading ? (
+            <div className="h-40 flex items-center justify-center text-gray-400">Loading...</div>
+          ) : errorPieChartData.length === 0 ? (
+            <div className="h-40 flex items-center justify-center text-gray-400">No data</div>
+          ) : (
+            <ResponsiveContainer width="100%" height={donutSize.outer * 3.2}>
+              <PieChart>
+                <Pie
+                  data={errorPieChartData}
+                  dataKey="value"
+                  nameKey="name"
+                  cx="50%"
+                  cy="50%"
+                  outerRadius={donutSize.outer}
+                  innerRadius={donutSize.inner}
+                  isAnimationActive={false}
+                  label={arcLabel(errorPieChartData, getTotalValue(errorPieChartData))}
+                  labelLine={false}
+                  minAngle={5}
+                >
+                  {errorPieChartData.map((entry, idx) => (
+                    <Cell
+                      key={`cell-error-${idx}`}
+                      fill={PIE_COLORS[idx % PIE_COLORS.length]}
+                      style={{ cursor: 'default' }}
+                    />
+                  ))}
+                  {/* Center label for total */}
+                  <Label
+                    value={getTotalValue(errorPieChartData)}
+                    position="center"
+                    fontSize={donutSize.outer / 2.5}
+                    fill="#b91c1c"
+                    className="font-bold"
+                  />
+                </Pie>
+                <Legend
+                  wrapperStyle={{ paddingTop: 20 }}
+                  content={({ payload }) => (
+                    <ul className="flex flex-wrap gap-4 mt-4 justify-center">
+                      {payload && payload.map((entry, idx) => (
+                        <li
+                          key={`legend-item-error-${idx}`}
+                          className="flex items-center gap-3 px-3 py-1 rounded text-base text-gray-700 dark:text-gray-200"
+                          style={{ cursor: 'default' }}
+                        >
+                          <span
+                            className="inline-block w-4 h-4 rounded-full border border-gray-300 dark:border-gray-700"
+                            style={{ backgroundColor: entry.color }}
+                          />
+                          {entry.value}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                />
+              </PieChart>
+            </ResponsiveContainer>
+          )}
+        </div>
       </div>
 
       {/* System Status */}

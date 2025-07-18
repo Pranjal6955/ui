@@ -169,6 +169,65 @@ export const useMetricsQueries = () => {
   };
 };
 
+// --- Custom hook for http_requests_total from backend ---
+export interface HttpRequestMetric {
+  labels: Record<string, string>;
+  value: number;
+}
+
+const fetchHttpRequestsTotal = async (): Promise<HttpRequestMetric[]> => {
+  try {
+    // Use backend API directly for this metric
+    const response = await api.get('/api/v1/metrics?name=http_requests_total');
+    // The response is an array of { labels, value }
+    // Ensure value is a number
+    return (Array.isArray(response.data) ? response.data : []).map((item: { labels: Record<string, string>; value: number | string }) => ({
+      labels: item.labels || {},
+      value: typeof item.value === 'number' ? item.value : Number(item.value) || 0,
+    }));
+  } catch (error) {
+    console.error('Error fetching http_requests_total:', error);
+    return [];
+  }
+};
+
+export const useHttpRequestsTotal = (options = {}) =>
+  useQuery<HttpRequestMetric[]>({
+    queryKey: ['http-requests-total'],
+    queryFn: fetchHttpRequestsTotal,
+    refetchInterval: 30000,
+    staleTime: 25000,
+    ...options,
+  });
+
+// --- Custom hook for http_error_requests_total from backend ---
+export interface HttpErrorRequestMetric {
+  labels: Record<string, string>;
+  value: number;
+}
+
+const fetchHttpErrorRequestsTotal = async (): Promise<HttpErrorRequestMetric[]> => {
+  try {
+    const response = await api.get('/api/v1/metrics?name=http_error_requests_total');
+    return (Array.isArray(response.data) ? response.data : []).map((item: { labels: Record<string, string>; value: number | string }) => ({
+      labels: item.labels || {},
+      value: typeof item.value === 'number' ? item.value : Number(item.value) || 0,
+    }));
+  } catch (error) {
+    console.error('Error fetching http_error_requests_total:', error);
+    return [];
+  }
+};
+
+export const useHttpErrorRequestsTotal = (options = {}) =>
+  useQuery<HttpErrorRequestMetric[]>({
+    queryKey: ['http-error-requests-total'],
+    queryFn: fetchHttpErrorRequestsTotal,
+    refetchInterval: 30000,
+    staleTime: 25000,
+    ...options,
+  });
+
 // Helper functions for processing metrics
 export const processMetricValue = (metric: PrometheusMetric): number => {
   return parseFloat(metric.value[1]) || 0;
